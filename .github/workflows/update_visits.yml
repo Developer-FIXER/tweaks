@@ -1,0 +1,52 @@
+name: Update Visit Log
+on:
+  schedule:
+    - cron: "*/5 * * * *"  # Runs every 30 minutes
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  update_json:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Fetch Issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUES=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/issues?state=open")
+
+          echo "Fetched issues: $ISSUES"
+          
+          VISIT_COUNT=0
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          VISITS_ARRAY="[]"
+
+          for issue in $(echo "$ISSUES" | jq -r '.[].number'); do
+            COMMENTS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$issue/comments")
+
+            for comment in $(echo "$COMMENTS" | jq -c '.[]'); do
+              VISIT_DATA=$(echo "$comment" | jq -r '.body')
+              VISITS_ARRAY=$(echo "$VISITS_ARRAY" | jq --argjson newData "$VISIT_DATA" '. + [$newData]')
+              VISIT_COUNT=$((VISIT_COUNT + 1))
+            done
+
+            # Delete issue after processing
+            curl -X PATCH -H "Authorization: token $GH_TOKEN" \
+              -d '{"state": "closed"}' \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$issue"
+          done
+
+          # Write visits.json
+          echo "{\"visit_count\": $VISIT_COUNT, \"last_visited\": \"$TIMESTAMP\", \"logs\": $VISITS_ARRAY}" > visits.json
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add visits.json
+          git commit -m "Updated visit log"
+          git push
